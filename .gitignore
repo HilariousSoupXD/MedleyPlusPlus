@@ -1,0 +1,14 @@
+# binaries
+app
+
+# build
+build/
+
+# object files
+*.o
+
+# logs
+*.log
+
+# OS
+.DS_Store
