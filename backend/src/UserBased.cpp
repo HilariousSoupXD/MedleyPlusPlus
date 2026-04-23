@@ -1,127 +1,190 @@
 #include "../include/UserBased.h"
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <unordered_set>
 #include <sstream>
 
-// Feature weights for user-similarity calculation
-namespace UserBasedWeights {
-    constexpr float ENERGY = 0.14f;
-    constexpr float DANCEABILITY = 0.12f;
-    constexpr float VALENCE = 0.12f;
-    constexpr float ACOUSTICNESS = 0.10f;
-    constexpr float INSTRUMENTALNESS = 0.10f;
-    constexpr float LIVENESS = 0.08f;
-    constexpr float SPEECHINESS = 0.08f;
-    constexpr float TEMPO = 0.13f;  // normalized
-    constexpr float POPULARITY = 0.13f;  // normalized
-}
-
-// Normalize tempo to 0-1 range
-static float normalizeTempo(float tempo) {
-    return std::min(1.0f, std::max(0.0f, tempo / 200.0f));
-}
-
-// Normalize popularity to 0-1 range
-static float normalizePopularity(int popularity) {
-    return std::min(1.0f, std::max(0.0f, popularity / 100.0f));
-}
-
-// Compute weighted Euclidean distance between user profile and track
-// Lower distance = more similar to user preference
-// Returns negative distance (for sorting: higher score = better)
-static float computeUserSimilarityScore(const Track& t, const User& user) {
-    using namespace UserBasedWeights;
-    
-    // Compute normalized differences
-    float diff_energy = std::abs(t.energy - user.avg_energy);
-    float diff_danceability = std::abs(t.danceability - user.avg_danceability);
-    float diff_valence = std::abs(t.valence - user.avg_valence);
-    float diff_acousticness = std::abs(t.acousticness - user.avg_acousticness);
-    float diff_instrumentalness = std::abs(t.instrumentalness - user.avg_instrumentalness);
-    float diff_liveness = std::abs(t.liveness - user.avg_liveness);
-    float diff_speechiness = std::abs(t.speechiness - user.avg_speechiness);
-    
-    float norm_tempo_track = normalizeTempo(t.tempo);
-    float norm_tempo_user = normalizeTempo(user.avg_tempo);
-    float diff_tempo = std::abs(norm_tempo_track - norm_tempo_user);
-    
-    float norm_pop_track = normalizePopularity(t.popularity);
-    float norm_pop_user = 0.5f;  // neutral baseline for popularity
-    float diff_popularity = std::abs(norm_pop_track - norm_pop_user);
-    
-    // Variance-weighted distance (features with higher variance get lower weight penalty)
-    float variance_factor_energy = 1.0f / (1.0f + user.var_energy);
-    float variance_factor_danceability = 1.0f / (1.0f + user.var_danceability);
-    float variance_factor_valence = 1.0f / (1.0f + user.var_valence);
-    
-    // Weighted distance (lower is better, so negate for sorting)
-    float distance =
-        ENERGY * diff_energy * variance_factor_energy +
-        DANCEABILITY * diff_danceability * variance_factor_danceability +
-        VALENCE * diff_valence * variance_factor_valence +
-        ACOUSTICNESS * diff_acousticness +
-        INSTRUMENTALNESS * diff_instrumentalness +
-        LIVENESS * diff_liveness +
-        SPEECHINESS * diff_speechiness +
-        TEMPO * diff_tempo +
-        POPULARITY * diff_popularity;
-    
-    return -distance;  // Negate so higher score = better match
-}
-
-// Generate explanation based on matching features
-static std::string generateUserExplanation(const Track& t, const User& user) {
-    std::stringstream ss;
-    
-    // Find dominant matching features
-    float energy_diff = std::abs(t.energy - user.avg_energy);
-    float dance_diff = std::abs(t.danceability - user.avg_danceability);
-    float valence_diff = std::abs(t.valence - user.avg_valence);
-    
-    // Rank by similarity (lower diff = better match)
-    if (energy_diff < 0.1f && dance_diff < 0.1f) {
-        ss << "Matches your energy and mood";
-    } else if (energy_diff < 0.1f) {
-        ss << "Matches your energy preference";
-    } else if (dance_diff < 0.1f) {
-        ss << "Matches your danceability taste";
-    } else if (valence_diff < 0.1f) {
-        ss << "Similar mood to your preference";
-    } else if (energy_diff < 0.15f || dance_diff < 0.15f) {
-        ss << "Close to your listening profile";
-    } else {
-        ss << "Aligned with your taste";
+namespace {
+std::string trackIdentity(const Track& track) {
+    if (!track.id.empty()) {
+        return track.id;
     }
-    
+    return track.name + "|" + track.artist;
+}
+
+float jaccardSimilarity(
+    const std::unordered_set<std::string>& a,
+    const std::unordered_set<std::string>& b
+) {
+    if (a.empty() || b.empty()) {
+        return 0.0f;
+    }
+
+    size_t intersection = 0;
+    const auto& smaller = (a.size() < b.size()) ? a : b;
+    const auto& larger = (a.size() < b.size()) ? b : a;
+    for (const auto& item : smaller) {
+        if (larger.count(item)) {
+            ++intersection;
+        }
+    }
+    const size_t uni = a.size() + b.size() - intersection;
+    if (uni == 0) {
+        return 0.0f;
+    }
+    return static_cast<float>(intersection) / static_cast<float>(uni);
+}
+
+std::string collaborativeReason(float strongestNeighborSimilarity, size_t neighborVotes) {
+    std::stringstream ss;
+    if (strongestNeighborSimilarity > 0.35f) {
+        ss << "Liked by users very similar to your taste";
+    } else if (strongestNeighborSimilarity > 0.2f) {
+        ss << "Common among users with overlapping preferences";
+    } else {
+        ss << "Recommended from collaborative user patterns";
+    }
+    ss << " (" << neighborVotes << " supporting users)";
     return ss.str();
 }
 
+float fallbackProfileScore(const Track& t, const User& user) {
+    float diff =
+        std::abs(t.energy - user.avg_energy) +
+        std::abs(t.danceability - user.avg_danceability) +
+        std::abs(t.valence - user.avg_valence) +
+        std::abs(t.acousticness - user.avg_acousticness);
+    return 1.0f / (1.0f + diff);
+}
+} // namespace
+
 std::vector<Recommendation> UserBased::recommend(
     const std::vector<Track>& tracks,
-    const User& user
+    const User& user,
+    size_t limit
 ) {
-    std::vector<std::pair<Track, float>> scored;
-    
-    for (const auto& t : tracks) {
-        scored.emplace_back(t, computeUserSimilarityScore(t, user));
+    if (!interactionStore_ || interactionStore_->users().empty()) {
+        return {};
     }
 
-    std::sort(scored.begin(), scored.end(),
-        [](const auto& a, const auto& b) {
-            return a.second > b.second;
+    std::unordered_set<std::string> activeLikedIds;
+    activeLikedIds.reserve(user.likedTracks.size() * 2);
+    for (const auto& liked : user.likedTracks) {
+        activeLikedIds.insert(trackIdentity(liked));
+    }
+    if (activeLikedIds.empty()) {
+        return {};
+    }
+
+    std::unordered_map<std::string, const Track*> trackByIdentity;
+    trackByIdentity.reserve(tracks.size() * 2);
+    for (const auto& track : tracks) {
+        trackByIdentity[trackIdentity(track)] = &track;
+    }
+
+    struct Neighbor {
+        const DummyUserInteractions* user;
+        float similarity;
+    };
+    std::vector<Neighbor> neighbors;
+    neighbors.reserve(interactionStore_->users().size());
+    for (const auto& dummy : interactionStore_->users()) {
+        float sim = jaccardSimilarity(activeLikedIds, dummy.likedTrackIds);
+        if (sim > 0.0f) {
+            neighbors.push_back(Neighbor{&dummy, sim});
         }
-    );
+    }
+    if (neighbors.empty()) {
+        return {};
+    }
+
+    std::sort(neighbors.begin(), neighbors.end(), [](const Neighbor& a, const Neighbor& b) {
+        return a.similarity > b.similarity;
+    });
+    const size_t kMaxNeighbors = std::min<size_t>(25, neighbors.size());
+
+    struct CandidateScore {
+        float weightedScore = 0.0f;
+        float strongestNeighbor = 0.0f;
+        size_t supportCount = 0;
+    };
+    std::unordered_map<std::string, CandidateScore> candidateScores;
+
+    for (size_t i = 0; i < kMaxNeighbors; ++i) {
+        const auto* dummy = neighbors[i].user;
+        const float neighborSim = neighbors[i].similarity;
+        for (const auto& candidateId : dummy->likedTrackIds) {
+            if (activeLikedIds.count(candidateId)) {
+                continue;
+            }
+            if (!trackByIdentity.count(candidateId)) {
+                continue;
+            }
+            auto& agg = candidateScores[candidateId];
+            agg.weightedScore += neighborSim;
+            agg.strongestNeighbor = std::max(agg.strongestNeighbor, neighborSim);
+            ++agg.supportCount;
+        }
+    }
+
+    std::vector<std::pair<std::string, CandidateScore>> ranked;
+    ranked.reserve(candidateScores.size());
+    for (const auto& [trackId, score] : candidateScores) {
+        ranked.emplace_back(trackId, score);
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+        if (a.second.weightedScore != b.second.weightedScore) {
+            return a.second.weightedScore > b.second.weightedScore;
+        }
+        return a.second.supportCount > b.second.supportCount;
+    });
 
     std::vector<Recommendation> result;
-    size_t limit = std::min(size_t(5), scored.size());
-    
-    for (size_t i = 0; i < limit; i++) {
-        result.emplace_back(Recommendation{
-            scored[i].first,
-            std::max(0.0f, scored[i].second + 1.0f),  // Convert to 0-1 scale
-            generateUserExplanation(scored[i].first, user)
-        });
+    result.reserve(limit);
+    std::unordered_set<std::string> selectedIds;
+
+    if (!ranked.empty()) {
+        const float maxScore = std::max(0.0001f, ranked.front().second.weightedScore);
+        const size_t collaborativeCount = std::min(limit, ranked.size());
+        for (size_t i = 0; i < collaborativeCount; ++i) {
+            const auto& trackId = ranked[i].first;
+            const auto& aggregate = ranked[i].second;
+            const auto* track = trackByIdentity[trackId];
+            const float normalized = std::min(1.0f, aggregate.weightedScore / maxScore);
+            result.push_back(Recommendation{
+                *track,
+                normalized,
+                collaborativeReason(aggregate.strongestNeighbor, aggregate.supportCount),
+            });
+            selectedIds.insert(trackId);
+        }
     }
-    
+
+    if (result.size() < limit) {
+        std::vector<std::pair<const Track*, float>> fallbackCandidates;
+        fallbackCandidates.reserve(tracks.size());
+        for (const auto& track : tracks) {
+            const std::string id = trackIdentity(track);
+            if (activeLikedIds.count(id) || selectedIds.count(id)) {
+                continue;
+            }
+            fallbackCandidates.emplace_back(&track, fallbackProfileScore(track, user));
+        }
+        std::sort(fallbackCandidates.begin(), fallbackCandidates.end(), [](const auto& a, const auto& b) {
+            return a.second > b.second;
+        });
+        for (const auto& candidate : fallbackCandidates) {
+            if (result.size() >= limit) {
+                break;
+            }
+            result.push_back(Recommendation{
+                *candidate.first,
+                std::min(1.0f, candidate.second),
+                "Collaborative pool was limited, using profile-similar fallback",
+            });
+        }
+    }
+
     return result;
 }

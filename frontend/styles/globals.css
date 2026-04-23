@@ -1,0 +1,7 @@
+/* Deprecated duplicate global stylesheet.
+ *
+ * The app imports `frontend/app/globals.css` from `frontend/app/layout.tsx`.
+ * Keeping a second globals file around can cause token drift and confusion.
+ *
+ * This file is intentionally left minimal.
+ */

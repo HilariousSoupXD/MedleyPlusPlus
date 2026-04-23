@@ -2,91 +2,149 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <unordered_set>
 
-// Feature weights (sum should be close to 1.0 for interpretability)
+// Feature weights for user-to-item content similarity.
 namespace ContentBasedWeights {
-    constexpr float DANCEABILITY = 0.12f;
-    constexpr float ENERGY = 0.15f;
-    constexpr float VALENCE = 0.12f;
-    constexpr float ACOUSTICNESS = 0.08f;  // inverted preference
-    constexpr float INSTRUMENTALNESS = 0.08f;  // inverted preference
-    constexpr float LIVENESS = 0.06f;
-    constexpr float SPEECHINESS = 0.05f;  // inverted preference
-    constexpr float TEMPO = 0.09f;  // normalized
-    constexpr float POPULARITY = 0.25f;  // normalized
+    constexpr float DANCEABILITY = 0.16f;
+    constexpr float ENERGY = 0.16f;
+    constexpr float VALENCE = 0.13f;
+    constexpr float ACOUSTICNESS = 0.09f;
+    constexpr float INSTRUMENTALNESS = 0.07f;
+    constexpr float LIVENESS = 0.07f;
+    constexpr float SPEECHINESS = 0.07f;
+    constexpr float TEMPO = 0.12f;
+    constexpr float POPULARITY = 0.13f;
 }
 
-// Normalize tempo to 0-1 range (typical range: 50-200 BPM)
 static float normalizeTempo(float tempo) {
     return std::min(1.0f, std::max(0.0f, tempo / 200.0f));
 }
 
-// Normalize popularity to 0-1 range
 static float normalizePopularity(int popularity) {
     return std::min(1.0f, std::max(0.0f, popularity / 100.0f));
 }
 
-// Compute weighted content-based score for a track
-static float computeContentScore(const Track& t) {
-    using namespace ContentBasedWeights;
-    
-    float score =
-        DANCEABILITY * t.danceability +
-        ENERGY * t.energy +
-        VALENCE * t.valence +
-        ACOUSTICNESS * (1.0f - t.acousticness) +  // prefer less acoustic
-        INSTRUMENTALNESS * (1.0f - t.instrumentalness) +  // prefer less instrumental
-        LIVENESS * t.liveness +
-        SPEECHINESS * (1.0f - t.speechiness) +  // prefer less speech
-        TEMPO * normalizeTempo(t.tempo) +
-        POPULARITY * normalizePopularity(t.popularity);
-    
-    return score;
+struct FeatureVector {
+    float danceability = 0.0f;
+    float energy = 0.0f;
+    float valence = 0.0f;
+    float acousticness = 0.0f;
+    float instrumentalness = 0.0f;
+    float liveness = 0.0f;
+    float speechiness = 0.0f;
+    float tempo = 0.0f;
+    float popularity = 0.0f;
+};
+
+static std::string trackIdentity(const Track& track) {
+    if (!track.id.empty()) {
+        return track.id;
+    }
+    return track.name + "|" + track.artist;
 }
 
-// Generate explanation based on dominant features
-static std::string generateContentExplanation(const Track& t) {
+static FeatureVector toVector(const Track& t) {
+    return FeatureVector{
+        t.danceability,
+        t.energy,
+        t.valence,
+        t.acousticness,
+        t.instrumentalness,
+        t.liveness,
+        t.speechiness,
+        normalizeTempo(t.tempo),
+        normalizePopularity(t.popularity),
+    };
+}
+
+static FeatureVector computeCentroid(const std::vector<Track>& likedTracks) {
+    FeatureVector centroid;
+    if (likedTracks.empty()) {
+        return centroid;
+    }
+    for (const auto& track : likedTracks) {
+        FeatureVector v = toVector(track);
+        centroid.danceability += v.danceability;
+        centroid.energy += v.energy;
+        centroid.valence += v.valence;
+        centroid.acousticness += v.acousticness;
+        centroid.instrumentalness += v.instrumentalness;
+        centroid.liveness += v.liveness;
+        centroid.speechiness += v.speechiness;
+        centroid.tempo += v.tempo;
+        centroid.popularity += v.popularity;
+    }
+    const float inv = 1.0f / static_cast<float>(likedTracks.size());
+    centroid.danceability *= inv;
+    centroid.energy *= inv;
+    centroid.valence *= inv;
+    centroid.acousticness *= inv;
+    centroid.instrumentalness *= inv;
+    centroid.liveness *= inv;
+    centroid.speechiness *= inv;
+    centroid.tempo *= inv;
+    centroid.popularity *= inv;
+    return centroid;
+}
+
+static float weightedDistance(const FeatureVector& a, const FeatureVector& b) {
+    using namespace ContentBasedWeights;
+
+    return
+        DANCEABILITY * std::abs(a.danceability - b.danceability) +
+        ENERGY * std::abs(a.energy - b.energy) +
+        VALENCE * std::abs(a.valence - b.valence) +
+        ACOUSTICNESS * std::abs(a.acousticness - b.acousticness) +
+        INSTRUMENTALNESS * std::abs(a.instrumentalness - b.instrumentalness) +
+        LIVENESS * std::abs(a.liveness - b.liveness) +
+        SPEECHINESS * std::abs(a.speechiness - b.speechiness) +
+        TEMPO * std::abs(a.tempo - b.tempo) +
+        POPULARITY * std::abs(a.popularity - b.popularity);
+}
+
+static std::string generateContentExplanation(const Track& t, const FeatureVector& centroid) {
     std::stringstream ss;
-    
-    // Find dominant features
-    float energy_score = 0.15f * t.energy;
-    float dance_score = 0.12f * t.danceability;
-    float valence_score = 0.12f * t.valence;
-    float pop_score = 0.25f * (t.popularity / 100.0f);
-    
-    // Combine explanations
-    bool high_energy = energy_score > 0.10f;
-    bool high_dance = dance_score > 0.08f;
-    bool high_valence = valence_score > 0.08f;
-    bool high_pop = pop_score > 0.15f;
-    
-    if (high_pop) {
-        ss << "Popular track";
+
+    const float energyDiff = std::abs(t.energy - centroid.energy);
+    const float danceDiff = std::abs(t.danceability - centroid.danceability);
+    const float valenceDiff = std::abs(t.valence - centroid.valence);
+
+    if (energyDiff < 0.08f && danceDiff < 0.08f) {
+        ss << "Strong content match to your liked tracks";
+    } else if (energyDiff < 0.1f) {
+        ss << "Very close to your preferred energy profile";
+    } else if (danceDiff < 0.1f) {
+        ss << "Very close to your danceability preferences";
+    } else if (valenceDiff < 0.1f) {
+        ss << "Similar mood profile to your liked songs";
     } else {
-        ss << "Quality track";
+        ss << "Content-similar to your selected songs";
     }
-    
-    if (high_energy) {
-        ss << " with high energy";
-    }
-    if (high_dance) {
-        ss << " and highly danceable";
-    }
-    if (high_valence && !high_energy) {
-        ss << " with positive mood";
-    }
-    
+
     return ss.str();
 }
 
 std::vector<Recommendation> ContentBased::recommend(
     const std::vector<Track>& tracks,
-    const User& user
+    const User& user,
+    size_t limit
 ) {
     std::vector<std::pair<Track, float>> scored;
-    
+    const FeatureVector centroid = computeCentroid(user.likedTracks);
+    std::unordered_set<std::string> likedIds;
+    likedIds.reserve(user.likedTracks.size() * 2);
+    for (const auto& liked : user.likedTracks) {
+        likedIds.insert(trackIdentity(liked));
+    }
+
     for (const auto& t : tracks) {
-        scored.emplace_back(t, computeContentScore(t));
+        if (likedIds.count(trackIdentity(t))) {
+            continue;
+        }
+        const float distance = weightedDistance(toVector(t), centroid);
+        const float score = 1.0f / (1.0f + distance);
+        scored.emplace_back(t, score);
     }
 
     std::sort(scored.begin(), scored.end(),
@@ -96,13 +154,13 @@ std::vector<Recommendation> ContentBased::recommend(
     );
 
     std::vector<Recommendation> result;
-    size_t limit = std::min(size_t(5), scored.size());
+    limit = std::min(limit, scored.size());
     
     for (size_t i = 0; i < limit; i++) {
         result.emplace_back(Recommendation{
             scored[i].first,
             scored[i].second,
-            generateContentExplanation(scored[i].first)
+            generateContentExplanation(scored[i].first, centroid)
         });
     }
     

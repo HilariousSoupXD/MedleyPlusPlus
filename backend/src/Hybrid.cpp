@@ -89,7 +89,8 @@ static std::string generateHybridExplanation(
 
 std::vector<Recommendation> Hybrid::recommend(
     const std::vector<Track>& tracks,
-    const User& user
+    const User& user,
+    size_t limit
 ) {
     struct ScoredTrack {
         Track track;
@@ -117,7 +118,7 @@ std::vector<Recommendation> Hybrid::recommend(
     
     std::vector<Recommendation> result;
     
-    size_t limit = std::min(size_t(5), scored.size());
+    limit = std::min(limit, scored.size());
     for (size_t i = 0; i < limit; i++) {
         result.emplace_back(Recommendation{
             scored[i].track,
