@@ -123,6 +123,13 @@ The frontend automatically fetches recommendations from the backend. To modify A
 
 For UI changes: `frontend/app/page.tsx`
 
+## Offline Evaluation
+
+Run the C++ offline comparison of popularity, content-based, user-based, and
+hybrid recommendations using the [offline evaluation report](./backend/EVALUATION.md).
+It documents the synthetic test setup and measured results; real interaction
+data is needed to assess real-world recommendation quality.
+
 ## Troubleshooting
 
 **Backend won't compile**: Ensure you have C++ dev tools and CMake installed

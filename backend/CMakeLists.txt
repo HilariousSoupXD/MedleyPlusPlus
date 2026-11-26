@@ -25,7 +25,21 @@ add_executable(app ${SOURCES})
 # Link libraries (pthread for threading)
 target_link_libraries(app pthread)
 
+# Offline strategy evaluation uses the same recommender implementations as the API.
+add_executable(evaluate
+    src/evaluate.cpp
+    src/DataLoader.cpp
+    src/UserProfiler.cpp
+    src/InteractionStore.cpp
+    src/ContentBased.cpp
+    src/UserBased.cpp
+    src/Hybrid.cpp
+)
+
 # Set output directory
 set_target_properties(app PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+set_target_properties(evaluate PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )

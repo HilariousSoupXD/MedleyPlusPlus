@@ -13,6 +13,7 @@ struct DummyUserInteractions {
 class InteractionStore {
 public:
     void buildFromTracks(const std::vector<Track>& tracks);
+    void addUser(DummyUserInteractions user);
 
     const std::vector<DummyUserInteractions>& users() const {
         return users_;

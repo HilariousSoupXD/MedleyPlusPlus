@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <sstream>
+#include <utility>
 
 namespace {
 std::string trackIdentity(const Track& track) {
@@ -24,6 +25,10 @@ size_t toBucketIndex(const Track& track) {
     return energyBucket * 4 + danceBucket * 2 + valenceBucket;
 }
 } // namespace
+
+void InteractionStore::addUser(DummyUserInteractions user) {
+    users_.push_back(std::move(user));
+}
 
 void InteractionStore::buildFromTracks(const std::vector<Track>& tracks) {
     users_.clear();
